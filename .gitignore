@@ -104,4 +104,6 @@ ENV/
 # Artifacts:
 tboard/
 .idea/
-
+model/
+image_augment/
+data/
