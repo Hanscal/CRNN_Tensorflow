@@ -9,7 +9,8 @@
 test the model to recognize the chinese pdf file
 """
 import argparse
-
+import sys
+sys.path.append('./')
 import cv2
 import numpy as np
 import tensorflow as tf
@@ -63,7 +64,18 @@ def split_pdf_image_into_row_image_block(pdf_image):
     :param pdf_image: the whole color pdf image
     :return:
     """
-    gray_image = cv2.cvtColor(pdf_image, cv2.COLOR_BGR2GRAY)
+    (h,w) = pdf_image.shape[:2]
+    M = cv2.getRotationMatrix2D((w/2,h/2),90,1.0)
+    abs_cos = abs(M[0,0])
+    abs_sin = abs(M[0,1])
+    rotate_w = int(h*abs_sin + w*abs_cos)
+    rotate_h = int(w*abs_sin + h*abs_cos)
+    M[0,2]+=(rotate_w-w)/2
+    M[1,2]+=(rotate_h-h)/2
+    rotate90 = cv2.warpAffine(pdf_image,M,(h,w))
+    cv2.imwrite('./testredseal.jpg',rotate90)
+    gray_image = cv2.cvtColor(rotate90, cv2.COLOR_BGR2GRAY)
+    gray_image = cv2.cvtColor(pdf_image,cv2.COLOR_BGR2GRAY)
     binarized_image = cv2.adaptiveThreshold(
         src=gray_image,
         maxValue=255,

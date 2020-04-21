@@ -10,12 +10,14 @@ Use shadow net to recognize the scene text of a single image
 """
 import argparse
 import os.path as ops
-
+import sys
+sys.path.append('./')
 import cv2
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import glog as logger
+import wordninja
 
 from config import global_config
 from crnn_model import crnn_net
@@ -60,7 +62,7 @@ def args_str2bool(arg_value):
         raise argparse.ArgumentTypeError('Unsupported value encountered.')
 
 
-def recognize(image_path, weights_path, char_dict_path, ord_map_dict_path, is_vis):
+def recognize(image_path, weights_path, char_dict_path, ord_map_dict_path, is_vis, is_english=True):
     """
 
     :param image_path:
@@ -126,10 +128,12 @@ def recognize(image_path, weights_path, char_dict_path, ord_map_dict_path, is_vi
 
         preds = sess.run(decodes, feed_dict={inputdata: [image]})
 
-        preds = codec.sparse_tensor_to_str(preds[0])
+        preds = codec.sparse_tensor_to_str(preds[0])[0]
+        if is_english:
+            preds = ' '.join(wordninja.split(preds))
 
-        logger.info('Predict image {:s} result {:s}'.format(
-            ops.split(image_path)[1], preds[0])
+        logger.info('Predict image {:s} result: {:s}'.format(
+            ops.split(image_path)[1], preds)
         )
 
         if is_vis:

@@ -1,0 +1,1 @@
+python tools/test_shadownet.py --image_path ./data/images/redseal_crop_num.png  --weights_path ./model/crnn_synth90k_tf/shadownet.ckpt  -o ./data/char_dict/ord_map_en.json -c ./data/char_dict/char_dict_en.json

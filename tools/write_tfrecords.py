@@ -10,6 +10,8 @@ Write tfrecords tools
 """
 import argparse
 import os
+import sys
+sys.path.append('./')
 import os.path as ops
 
 from data_provider import shadownet_data_feed_pipline
@@ -21,7 +23,8 @@ def init_args():
     :return:
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('-d', '--dataset_dir', type=str, help='The origin synth90k dataset_dir')
+    parser.add_argument('-d', '--dataset_dir', type=str, help='The dataset_dir')
+    parser.add_argument('-l', '--label_dir', type=str, help='The label dir')
     parser.add_argument('-s', '--save_dir', type=str, help='The generated tfrecords save dir')
     parser.add_argument('-c', '--char_dict_path', type=str, default=None,
                         help='The char dict file path. If it is None the char dict will be'
@@ -33,7 +36,7 @@ def init_args():
     return parser.parse_args()
 
 
-def write_tfrecords(dataset_dir, char_dict_path, ord_map_dict_path, save_dir):
+def write_tfrecords(dataset_dir,label_dir, char_dict_path, ord_map_dict_path, save_dir):
     """
     Write tensorflow records for training , testing and validation
     :param dataset_dir: the root dir of crnn dataset
@@ -51,6 +54,7 @@ def write_tfrecords(dataset_dir, char_dict_path, ord_map_dict_path, save_dir):
     # test crnn data producer
     producer = shadownet_data_feed_pipline.CrnnDataProducer(
         dataset_dir=dataset_dir,
+        label_dir=label_dir,
         char_dict_path=char_dict_path,
         ord_map_dict_path=ord_map_dict_path,
         writer_process_nums=8
@@ -69,6 +73,7 @@ if __name__ == '__main__':
 
     write_tfrecords(
         dataset_dir=args.dataset_dir,
+        label_dir=args.label_dir,
         char_dict_path=args.char_dict_path,
         ord_map_dict_path=args.ord_map_dict_path,
         save_dir=args.save_dir

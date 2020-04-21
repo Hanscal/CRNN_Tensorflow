@@ -6,7 +6,7 @@
 # @File    : shadownet_data_feed_pipline.py
 # @IDE: PyCharm
 """
-nsfw数据feed pipline
+Synth90k dataset feed pipline
 """
 import os
 import os.path as ops
@@ -29,7 +29,7 @@ class CrnnDataProducer(object):
     """
     Convert raw image file into tfrecords
     """
-    def __init__(self, dataset_dir, char_dict_path=None, ord_map_dict_path=None,
+    def __init__(self, dataset_dir, label_dir, char_dict_path=None, ord_map_dict_path=None,
                  writer_process_nums=4):
         """
         init crnn data producer
@@ -43,10 +43,10 @@ class CrnnDataProducer(object):
 
         # Check image source data
         self._dataset_dir = dataset_dir
-        self._train_annotation_file_path = ops.join(dataset_dir, 'annotation_train.txt')
-        self._test_annotation_file_path = ops.join(dataset_dir, 'annotation_test.txt')
-        self._val_annotation_file_path = ops.join(dataset_dir, 'annotation_val.txt')
-        self._lexicon_file_path = ops.join(dataset_dir, 'lexicon.txt')
+        self._train_annotation_file_path = ops.join(label_dir, 'annotation_train.txt')
+        self._test_annotation_file_path = ops.join(label_dir, 'annotation_test.txt')
+        self._val_annotation_file_path = ops.join(label_dir, 'annotation_val.txt')
+        self._lexicon_file_path = ops.join(label_dir, 'lexicon.txt')
         self._char_dict_path = char_dict_path
         self._ord_map_dict_path = ord_map_dict_path
         self._writer_process_nums = writer_process_nums
@@ -92,7 +92,6 @@ class CrnnDataProducer(object):
             writer_process_nums=self._writer_process_nums,
             dataset_flag='train'
         )
-
         tfrecords_writer.run()
 
         log.info('Generate training sample tfrecords complete, cost time: {:.5f}'.format(time.time() - t_start))
@@ -110,7 +109,6 @@ class CrnnDataProducer(object):
             writer_process_nums=self._writer_process_nums,
             dataset_flag='val'
         )
-
         tfrecords_writer.run()
 
         log.info('Generate validation sample tfrecords complete, cost time: {:.5f}'.format(time.time() - t_start))
@@ -128,7 +126,6 @@ class CrnnDataProducer(object):
             writer_process_nums=self._writer_process_nums,
             dataset_flag='test'
         )
-
         tfrecords_writer.run()
 
         log.info('Generate testing sample tfrecords complete, cost time: {:.5f}'.format(time.time() - t_start))
@@ -164,8 +161,10 @@ class CrnnDataProducer(object):
         with open(self._train_annotation_file_path, 'r', encoding='utf-8') as file:
             for line in tqdm.tqdm(file, total=num_lines):
 
-                image_name, label_index = line.rstrip('\r').rstrip('\n').split(' ')
+                image_name, label_index = line.rstrip('\r').rstrip('\n').split()
                 image_path = ops.join(self._dataset_dir, image_name)
+                #import pdb;pdb.set_trace()
+                print(label_index)
                 label_index = int(label_index)
 
                 if not ops.exists(image_path):
@@ -195,7 +194,6 @@ class CrnnDataProducer(object):
                 image_name, label_index = line.rstrip('\r').rstrip('\n').split(' ')
                 image_path = ops.join(self._dataset_dir, image_name)
                 label_index = int(label_index)
-
                 if not ops.exists(image_path):
                     raise ValueError('Example image {:s} not exist'.format(image_path))
 
@@ -220,7 +218,6 @@ class CrnnDataProducer(object):
         char_dict_builder.map_ord_to_index(char_lexicon_list, save_path=self._ord_map_dict_path)
 
         log.info('Write char dict map complete')
-
 
 class CrnnDataFeeder(object):
     """
