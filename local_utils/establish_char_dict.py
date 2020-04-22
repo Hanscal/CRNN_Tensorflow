@@ -11,6 +11,7 @@ Establish the char dictionary in order to contain chinese character
 import json
 import os
 import os.path as ops
+import numpy as np
 from typing import Iterable
 
 
@@ -18,8 +19,9 @@ class CharDictBuilder(object):
     """
         Build and read char dict
     """
-    def __init__(self):
-        pass
+    def __init__(self, charset_path=None):
+        if charset_path is not None:
+            self.char2id, self.id2char = self.read_charset(charset_path)
 
     @staticmethod
     def _read_chars(origin_char_list):
@@ -102,4 +104,57 @@ class CharDictBuilder(object):
         """
         with open(ord_map_dict_path, 'r', encoding='utf-8') as json_f:
             res = json.load(json_f)
+        return res
+
+    @staticmethod
+    def read_charset(charset_path):
+        with open(charset_path,'r') as fr:
+            data = fr.readline().strip('\n')
+            char_list = list(data)
+            char2id = {char: str(idx) for idx,char in enumerate(char_list)}
+            id2char = {str(idx): char for idx,char in enumerate(char_list)}
+        return char2id, id2char
+
+    def char_to_int(self, char):
+        try:
+            result = int(self.char2id[char])
+            return result
+        except KeyError:
+            raise KeyError("Character {} missing in ord_map.json".format(char))
+
+    def int_to_char(self, num):
+        try:
+            result = self.id2char(num)
+            return result
+        except KeyError:
+            raise KeyError("Character {} missing in ord_map.json".format(char))
+
+    def encode_label(self,label):
+        encode_label = [self.char_to_int(char) for char in label]
+        length = len(label)
+        return encode_label, length
+
+    def decode_label(self, sparse_tensor):
+        """
+        :param sparse_tensor: prediction or ground truth label
+        :return: String value of the sparse tensor
+        """
+        indices = sparse_tensor.indices
+        values = sparse_tensor.values
+        # Translate from consecutive numbering into char
+        values = np.array([[self.int_to_char(num) for num in tmp ] for tmp in values])
+        dense_shape = sparse_tensor.dense_shape
+
+        number_lists = np.ones(dense_shape, dtype=values.dtype)
+        str_lists = []
+        res = []
+        for i, index in enumerate(indices):
+            number_lists[index[0], index[1]] = values[i]
+        for number_list in number_lists:
+            # append characters
+            str_lists.append([val for val in number_list])
+        for str_list in str_lists:
+            # int_to_char() returns '\x00' for an input == 1, which is the default
+            # value in number_lists, so we skip it when building the result
+            res.append(''.join(c for c in str_list if c != '\x00'))
         return res

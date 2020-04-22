@@ -22,13 +22,13 @@ __C.ARCH.HIDDEN_UNITS = 256
 # Number of stacked LSTM cells
 __C.ARCH.HIDDEN_LAYERS = 2
 # Sequence length.  This has to be the width of the final feature map of the CNN, which is input size width / 4
-__C.ARCH.SEQ_LENGTH = 70  # cn dataset
+__C.ARCH.SEQ_LENGTH = 200  # cn dataset
 # __C.ARCH.SEQ_LENGTH = 25  # synth90k dataset
 # Width x height into which training / testing images are resized before feeding into the network
-__C.ARCH.INPUT_SIZE = (280, 32)  # cn dataset
+__C.ARCH.INPUT_SIZE = (800, 48)  # cn dataset
 # __C.ARCH.INPUT_SIZE = (100, 32)  # synth90k dataset
 # Number of channels in images
-__C.ARCH.INPUT_CHANNELS = 3
+__C.ARCH.INPUT_CHANNELS = 1
 # Number character classes
 __C.ARCH.NUM_CLASSES = 5825  # cn dataset
 #__C.ARCH.NUM_CLASSES = 37  # synth90k dataset

@@ -14,6 +14,7 @@ import tensorflow as tf
 from tensorflow.contrib import rnn
 
 from crnn_model import cnn_basenet
+from local_utils.establish_char_dict import CharDictBuilder
 from config import global_config
 
 CFG = global_config.cfg
@@ -23,7 +24,7 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
     """
         Implement the crnn model for squence recognition
     """
-    def __init__(self, phase, hidden_nums, layers_nums, num_classes):
+    def __init__(self, config, phase, charset_path, inputs_x=None, inputs_y=None):
         """
 
         :param phase: 'Train' or 'Test'
@@ -32,21 +33,31 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         :param num_classes: Number of classes (different symbols) to detect
         """
         super(ShadowNet, self).__init__()
-        if phase == 'train':
-            self._phase = tf.constant('train', dtype=tf.string)
+        self.config = config.ARCH
+        self.imgW, self.imgH = self.config.INPUT_SIZE
+        self.nc = self.config.INPUT_CHANNELS
+        self._hidden_nums = self.config.HIDDEN_UNITS
+        self._layers_nums = self.config.HIDDEN_LAYERS
+        self.chardict = CharDictBuilder()
+        self.char2id, self.id2char = self.chardict.read_charset(charset_path)
+        self._num_classes = len(self.char2id)
+
+
+        if inputs_x is None:
+            self.inputs_x = tf.placeholder(tf.int32, [None, self.imgH, self.imgW, self.nc], name='input_x')
         else:
-            self._phase = tf.constant('test', dtype=tf.string)
-        self._hidden_nums = hidden_nums
-        self._layers_nums = layers_nums
-        self._num_classes = num_classes
-        self._is_training = self._init_phase()
+            self.inputs_x = inputs_x
 
-    def _init_phase(self):
-        """
+        if inputs_y is None:
+            self.inputs_y = tf.placeholder(tf.float32, [None, self._num_classes], name='input_y')
+        else:
+            self.inputs_y = inputs_y
 
-        :return:
-        """
-        return tf.equal(self._phase, tf.constant('train', dtype=tf.string))
+        if phase.lower() =='train':
+            self._is_training = self._init_phase(phase)
+
+    def _init_phase(self,phase):
+        return tf.equal(phase.lower(),'train')
 
     def _conv_stage(self, inputdata, out_dims, name):
         """ Standard VGG convolutional stage: 2d conv, relu, and maxpool
@@ -79,6 +90,7 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         :param name:
         :return:
         """
+        imgH, imgW = inputdata.get_shape().as_list()[1:3]
         with tf.variable_scope(name_or_scope=name):
             conv1 = self._conv_stage(
                 inputdata=inputdata, out_dims=64, name='conv1'
@@ -128,7 +140,7 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
                 inputdata=relu6, kernel_size=[2, 1], stride=[2, 1], name='max_pool6'
             )
             conv7 = self.conv2d(
-                inputdata=max_pool6, out_channel=512, kernel_size=2, stride=[2, 1], use_bias=False, name='conv7'
+                inputdata=max_pool6, out_channel=512, kernel_size=2, stride=[imgH//16, 1], use_bias=False, name='conv7'
             )
             bn7 = self.layerbn(
                 inputdata=conv7, is_training=self._is_training, name='bn7'
@@ -258,3 +270,13 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         )
 
         return inference_ret, loss
+
+def test():
+    input_x = tf.random_normal((10,48,800,1),mean=5,stddev=0,dtype=tf.float32)
+    charset_path = '/Volumes/work/practice/CRNN_Tensorflow/data/test_images/doc_charset.txt'
+    model = ShadowNet(CFG,phase='train',charset_path=charset_path)
+    net_out = model.inference(input_x,'inference')
+    print(net_out)
+
+if __name__ =='__main__':
+    test()
