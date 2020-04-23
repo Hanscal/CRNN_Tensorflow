@@ -12,7 +12,6 @@ import time
 import logging
 import cv2
 
-
 from_ch = [
     u'，', u'！', u'：', u'（', u'）', u'；', u'—', u'“', u'”', u'‘', u'’', u'～', u'①', u'②', u'③', u'④', u'⑤', u'⑥', u'⑦',
     u'⑧', u'⑨', u'⑩', u'√', u'℃'
@@ -98,6 +97,7 @@ class CrnnData(object):
             np.random.shuffle(self.data_indexes_array)
         self._data_list = self._data_list[self.data_indexes_array]
 
+
 class SoftpaddingCollate(object):
     def __init__(self, imgH=48, imgW=800, keep_ratio=True,nc=1):
         self.imgH = imgH
@@ -120,10 +120,7 @@ class SoftpaddingCollate(object):
             except Exception as e:
                 logging.info('corrupt image {}'.format(img_path))
 
-        max_img_w = max([img.shape[1] * self.imgH // img.shape[0] for img in images])
-        max_w = min(max_img_w, self.imgW)
-
-        transform = PaddingResizeNormalize((max_w, self.imgH), keep_ratio=self.keep_ratio, nc=self.nc)
+        transform = PaddingResizeNormalize((self.imgW, self.imgH), keep_ratio=self.keep_ratio, nc=self.nc)
         images = [transform(image) for image in images]
         return np.asarray(images), np.asarray(labels), np.asarray(image_paths_new)
 
@@ -164,7 +161,7 @@ class PaddingResizeNormalize(object):
         return new_img
 
 def test():
-    data_dir = ['/Volumes/work/practice/CRNN_Tensorflow/data/test_images/train_data','/Volumes/work/practice/CRNN_Tensorflow/data/test_images/train_data']
+    data_dir = ['../data/test_images/train_data','../data/test_images/train_data']
     spc = SoftpaddingCollate()
     dataset = CrnnData(data_dir,spc)
     batch_data = dataset.next_batch(10)

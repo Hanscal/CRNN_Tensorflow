@@ -115,6 +115,25 @@ class CharDictBuilder(object):
             id2char = {str(idx): char for idx,char in enumerate(char_list)}
         return char2id, id2char
 
+    def sparse_label(self,texts):
+        """Create a sparse representention of x.
+           Args:
+               sequences: a list of lists of type dtype where each element is a sequence
+           Returns:
+               A tuple with (indices, values, shape)
+           """
+        indices = []
+        values = []
+
+        for n, seq in enumerate(texts):
+            indices.extend(zip([n] * len(seq), range(0, len(seq), 1)))
+            values.extend(seq)
+        indices = np.asarray(indices,dtype=np.int64)
+        values = np.asarray(values, dtype=np.int32)
+        shape = np.asarray([len(texts), np.asarray(indices).max(0)[1]+1], dtype=np.int64)
+
+        return (indices, values, shape)
+
     def char_to_int(self, char):
         try:
             result = int(self.char2id[char])

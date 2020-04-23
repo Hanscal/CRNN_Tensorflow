@@ -24,7 +24,7 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
     """
         Implement the crnn model for squence recognition
     """
-    def __init__(self, config, phase, charset_path, inputs_x=None, inputs_y=None):
+    def __init__(self, config, phase, charset_path):
         """
 
         :param phase: 'Train' or 'Test'
@@ -43,18 +43,11 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         self._num_classes = len(self.char2id)
 
 
-        if inputs_x is None:
-            self.inputs_x = tf.placeholder(tf.int32, [None, self.imgH, self.imgW, self.nc], name='input_x')
-        else:
-            self.inputs_x = inputs_x
+        self.inputs_x = tf.placeholder(tf.float32, [None, self.imgH, self.imgW, self.nc], name='input_x')
+        self.inputs_y = tf.sparse_placeholder(tf.int32, name='input_y')
+        self.seq_len = tf.placeholder(tf.int32, [None])
 
-        if inputs_y is None:
-            self.inputs_y = tf.placeholder(tf.float32, [None, self._num_classes], name='input_y')
-        else:
-            self.inputs_y = inputs_y
-
-        if phase.lower() =='train':
-            self._is_training = self._init_phase(phase)
+        self._is_training = self._init_phase(phase)
 
     def _init_phase(self,phase):
         return tf.equal(phase.lower(),'train')
@@ -199,7 +192,8 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
             [batch_s, _, hidden_nums] = inputdata.get_shape().as_list()  # [batch, width, 2*n_hidden]
 
             shape = tf.shape(stack_lstm_layer)
-            rnn_reshaped = tf.reshape(stack_lstm_layer, [shape[0] * shape[1], shape[2]])
+            # batch_s, max_timesteps = shape[0], shape[1]
+            rnn_reshaped = tf.reshape(stack_lstm_layer, [shape[0]*shape[1], shape[2]])
 
             w = tf.get_variable(
                 name='w',
@@ -220,21 +214,21 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
 
         return rnn_out, raw_pred
 
-    def inference(self, inputdata, name, reuse=False):
+    def inference(self, name, reuse=False):
         """
-        Main routine to construct the network
+        Main routine to construct the network  build graph
         :param inputdata:
         :param name:
         :param reuse:
         :return:
         """
         with tf.variable_scope(name_or_scope=name, reuse=reuse):
-            # centerlized data
-            inputdata = tf.divide(inputdata, 255.0)
+            # centerlized data already norm the image
+            # inputdata = tf.divide(self.inputs_x, 255.0)
 
             # first apply the cnn feature extraction stage
             cnn_out = self._feature_sequence_extraction(
-                inputdata=inputdata, name='feature_extraction_module'
+                inputdata=self.inputs_x, name='feature_extraction_module'
             )
 
             # second apply the map to sequence stage
@@ -249,7 +243,7 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
 
         return net_out
 
-    def compute_loss(self, inputdata, labels, name, reuse):
+    def compute_loss(self, name, reuse=False):
         """
 
         :param inputdata:
@@ -257,25 +251,29 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         :return:
         """
 
-        inference_ret = self.inference(
-            inputdata=inputdata, name=name, reuse=reuse
-        )
+        inference_ret = self.inference(name=name, reuse=reuse)
 
         loss = tf.reduce_mean(
             tf.nn.ctc_loss(
-                labels=labels, inputs=inference_ret,
+                labels=self.inputs_y, inputs=inference_ret,
                 sequence_length=CFG.ARCH.SEQ_LENGTH * np.ones(CFG.TRAIN.BATCH_SIZE)
             ),
             name='ctc_loss'
         )
 
-        return inference_ret, loss
+        decoded, log_prob = tf.nn.ctc_beam_search_decoder(inference_ret, self.seq_len, merge_repeated=False)
+        self.dense_decoded = tf.sparse_tensor_to_dense(decoded[0], default_value=-1)
+        sequence_dist = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32), self.inputs_y))
+
+        return inference_ret, loss, decoded, log_prob, sequence_dist
 
 def test():
     input_x = tf.random_normal((10,48,800,1),mean=5,stddev=0,dtype=tf.float32)
+    input_y = tf.sparse()
     charset_path = '/Volumes/work/practice/CRNN_Tensorflow/data/test_images/doc_charset.txt'
     model = ShadowNet(CFG,phase='train',charset_path=charset_path)
-    net_out = model.inference(input_x,'inference')
+    net_out = model.inference('inference')
+    loss_op = model.compute_loss()
     print(net_out)
 
 if __name__ =='__main__':
