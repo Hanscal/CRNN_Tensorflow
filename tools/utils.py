@@ -70,7 +70,7 @@ def compute_net_gradients(images, labels, net, optimizer=None, is_net_first_init
     :param is_net_first_initialized: if the network is initialized
     :return:
     """
-    _, net_loss = net.compute_loss(
+    inference_ret, net_loss, decoded, log_prob, sequence_dist, inputs, targets, seq_len = net.compute_loss(
         inputdata=images,
         labels=labels,
         name='shadow_net',

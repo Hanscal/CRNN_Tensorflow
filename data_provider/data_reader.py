@@ -44,6 +44,8 @@ class CrnnData(object):
         if shuffle:
             self.shuffle()
 
+
+
     def load_dataset(self, data_path):
         self._data_list = None
         for rpath in data_path:
@@ -97,6 +99,15 @@ class CrnnData(object):
             np.random.shuffle(self.data_indexes_array)
         self._data_list = self._data_list[self.data_indexes_array]
 
+    @property
+    def size(self):
+        return len(self.data_size)
+
+    def the_label(self, indexs):
+        labels = []
+        for i in indexs:
+            labels.append(self.labels[i])
+        return labels
 
 class SoftpaddingCollate(object):
     def __init__(self, imgH=48, imgW=800, keep_ratio=True,nc=1):

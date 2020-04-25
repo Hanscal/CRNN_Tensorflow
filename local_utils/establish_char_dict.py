@@ -132,7 +132,7 @@ class CharDictBuilder(object):
         values = np.asarray(values, dtype=np.int32)
         shape = np.asarray([len(texts), np.asarray(indices).max(0)[1]+1], dtype=np.int64)
 
-        return (indices, values, shape)
+        return indices, values, shape
 
     def char_to_int(self, char):
         try:

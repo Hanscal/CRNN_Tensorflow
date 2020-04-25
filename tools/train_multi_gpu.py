@@ -5,231 +5,125 @@ author: "caihua"
 date: 2020/4/21
 Email: caihua@datagrand.com
 '''
+import model
 import time
-import os
-import os.path as ops
-import math
 import tensorflow as tf
-import glog as logger
 import numpy as np
+import os
+import sys
+import os.path as ops
+
+PRO_PATH = ops.dirname(ops.dirname(ops.abspath(__file__)))
+sys.path.append(PRO_PATH)
+print(PRO_PATH)
+
+import logging, datetime
 from config import global_config
-from crnn_model import crnn_net
-from data_provider import shadownet_data_feed_pipline
-CFG = global_config.cfg
+from data_provider.data_reader import CrnnData, SoftpaddingCollate
+from local_utils.establish_char_dict import CharDictBuilder
 
-def train_shadownet_multi_gpu(dataset_dir, weights_path, char_dict_path, ord_map_dict_path):
-    """
+FLAGS = global_config.cfg
+logger = logging.getLogger('Traing for ocr using DenseCNN+BiLSTM+CTC')
+logger.setLevel(logging.INFO)
 
-    :param dataset_dir:
-    :param weights_path:
-    :param char_dict_path:
-    :param ord_map_dict_path:
-    :return:
-    """
-    # prepare dataset information
-    train_dataset = shadownet_data_feed_pipline.CrnnDataFeeder(
-        dataset_dir=dataset_dir,
-        char_dict_path=char_dict_path,
-        ord_map_dict_path=ord_map_dict_path,
-        flags='train'
-    )
-    val_dataset = shadownet_data_feed_pipline.CrnnDataFeeder(
-        dataset_dir=dataset_dir,
-        char_dict_path=char_dict_path,
-        ord_map_dict_path=ord_map_dict_path,
-        flags='val'
-    )
-    train_images, train_labels, train_images_paths = train_dataset.inputs(
-        batch_size=CFG.TRAIN.BATCH_SIZE
-    )
-    val_images, val_labels, val_images_paths = val_dataset.inputs(
-        batch_size=CFG.TRAIN.BATCH_SIZE
-    )
+collate_fn = SoftpaddingCollate(imgH=48, imgW=800, keep_ratio=True, nc=1)
 
-    # set crnn net
-    shadownet = crnn_net.ShadowNet(
-        phase='train',
-        hidden_nums=CFG.ARCH.HIDDEN_UNITS,
-        layers_nums=CFG.ARCH.HIDDEN_LAYERS,
-        num_classes=CFG.ARCH.NUM_CLASSES
-    )
-    shadownet_val = crnn_net.ShadowNet(
-        phase='test',
-        hidden_nums=CFG.ARCH.HIDDEN_UNITS,
-        layers_nums=CFG.ARCH.HIDDEN_LAYERS,
-        num_classes=CFG.ARCH.NUM_CLASSES
-    )
 
-    # set average container
-    tower_grads = []
-    train_tower_loss = []
-    val_tower_loss = []
-    batchnorm_updates = None
-    train_summary_op_updates = None
+def train(train_dir, val_dir, charset_path):
+    g = model.Graph(is_training=True)
+    print('loading train data, please wait---------------------', 'end= ')
+    train_feeder = CrnnData(data_dir_list=train_dir, collate_fn=collate_fn, shuffle=True)
+    val_feeder = CrnnData(data_dir_list=val_dir, collate_fn=collate_fn, shuffle=False)
 
-    # set lr
-    global_step = tf.Variable(0, name='global_step', trainable=False)
-    learning_rate = tf.train.exponential_decay(
-        learning_rate=CFG.TRAIN.LEARNING_RATE,
-        global_step=global_step,
-        decay_steps=CFG.TRAIN.LR_DECAY_STEPS,
-        decay_rate=CFG.TRAIN.LR_DECAY_RATE,
-        staircase=CFG.TRAIN.LR_STAIRCASE)
+    num_train_samples = train_feeder.size
+    num_batches_per_epoch = int(num_train_samples / FLAGS.batch_size)
+    num_val_samples = val_feeder.size
+    num_val_per_epoch = int(num_val_samples / FLAGS.batch_size)
 
-    # set up optimizer
-    optimizer = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9)
+    char_build = CharDictBuilder(charset_path=charset_path)
 
-    # set distributed train op
-    with tf.variable_scope(tf.get_variable_scope()):
-        is_network_initialized = False
-        for i in range(CFG.TRAIN.GPU_NUM):
-            with tf.device('/gpu:{:d}'.format(i)):
-                with tf.name_scope('tower_{:d}'.format(i)) as _:
-                    train_loss, grads = compute_net_gradients(
-                        train_images, train_labels, shadownet, optimizer,
-                        is_net_first_initialized=is_network_initialized)
+    def encode_to_int(labels):
+        label_encode, label_length = [], []
+        for label in labels:
+            label_t, label_tl = char_build.encode_label(label)
+            label_encode.append(label_t)
+            label_length.append(label_tl)
+        label_encode = char_build.sparse_label(label_encode)
+        return label_encode, label_length
 
-                    is_network_initialized = True
+    config = tf.ConfigProto(log_device_placement=False, allow_soft_placement=False)
+    with tf.Session(graph=g.graph, config=config) as sess:
+        sess.run(tf.global_variables_initializer())
+        saver = tf.train.Saver(tf.global_variables(), max_to_keep=10)
+        g.graph.finalize()
+        train_writer = tf.summary.FileWriter('tboard/crnn_syn90k/train', sess.graph)
+        if FLAGS.restore:
+            ckpt = tf.train.latest_checkpoint(FLAGS.checkpoint_dir)
+            if ckpt:
+                saver.restore(sess, ckpt)
+                print('restore from the checkpoint{0}'.format(ckpt))
 
-                    # Only use the mean and var in the first gpu tower to update the parameter
-                    if i == 0:
-                        batchnorm_updates = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-                        train_summary_op_updates = tf.get_collection(tf.GraphKeys.SUMMARIES)
+        print('=============================begin training=============================')
+        val_inputs, val_labels, _ = val_feeder.next_batch(batch_size=FLAGS.TEST.BATCH_SIZE)
+        val_labels, val_labels_length = encode_to_int(val_labels)
+        # print(len(val_inputs))
+        val_feed = {g.inputs: val_inputs,
+                    g.labels: val_labels,
+                    g.seq_len: np.array([g.cnn_time] * val_inputs.shape[0])}
+        for cur_epoch in range(FLAGS.num_epochs):
+            train_cost = 0
+            batch_time = time.time()
+            # the tracing part
+            for cur_batch in range(num_batches_per_epoch):
+                if (cur_batch + 1) % 100 == 0:
+                    print('batch', cur_batch, ': time', time.time() - batch_time)
+                batch_inputs, batch_labels, _ = train_feeder.next_batch(batch_size=FLAGS.TEST.BATCH_SIZE)
+                batch_labels, train_labels_length = encode_to_int(batch_labels)
+                feed = {g.inputs: batch_inputs,
+                        g.labels: batch_labels,
+                        g.seq_len: np.array([g.cnn_time] * batch_inputs.shape[0])}
 
-                    tower_grads.append(grads)
-                    train_tower_loss.append(train_loss)
-                with tf.name_scope('validation_{:d}'.format(i)) as _:
-                    val_loss, _ = compute_net_gradients(
-                        val_images, val_labels, shadownet_val, optimizer,
-                        is_net_first_initialized=is_network_initialized)
-                    val_tower_loss.append(val_loss)
+                # if summary is needed
+                # batch_cost,step,train_summary,_ = sess.run([cost,global_step,merged_summay,optimizer],feed)
+                summary_str, batch_cost, step, _ = sess.run([g.merged_summay, g.cost, g.global_step, g.optimizer], feed)
+                # calculate the cost
+                train_cost += batch_cost * FLAGS.batch_size
+                train_writer.add_summary(summary_str, step)
 
-    grads = average_gradients(tower_grads)
-    avg_train_loss = tf.reduce_mean(train_tower_loss)
-    avg_val_loss = tf.reduce_mean(val_tower_loss)
+                # save the checkpoint
+                if step % FLAGS.save_steps == 1000:
+                    if not os.path.isdir(FLAGS.checkpoint_dir):
+                        os.mkdir(FLAGS.checkpoint_dir)
+                    logger.info('save the checkpoint of{0}', format(step))
+                    saver.save(sess, os.path.join(FLAGS.checkpoint_dir, 'ocr-model'), global_step=step)
+                # train_err+=the_err*FLAGS.batch_size
+                # do validation
+                if step % FLAGS.validation_steps == 0:
+                    dense_decoded, lastbatch_err, lr = sess.run([g.dense_decoded, g.lerr, g.learning_rate], val_feed)
+                    # print the decode result
+                    acc = accuracy_calculation(val_feeder.labels, dense_decoded, ignore_value=-1, isPrint=True)
+                    avg_train_cost = train_cost / ((cur_batch + 1) * FLAGS.batch_size)
+                    # train_err/=num_train_samples
+                    now = datetime.datetime.now()
+                    log = "{}/{} {}:{}:{} Epoch {}/{}, accuracy = {:.3f},avg_train_cost = {:.3f}, lastbatch_err = {:.3f}, lr={:.8f}"
+                    print(log.format(now.month, now.day, now.hour, now.minute, now.second,
+                                     cur_epoch + 1, FLAGS.num_epochs, acc, avg_train_cost, lastbatch_err, lr))
 
-    # Track the moving averages of all trainable variables
-    variable_averages = tf.train.ExponentialMovingAverage(
-        CFG.TRAIN.MOVING_AVERAGE_DECAY, num_updates=global_step)
-    variables_to_average = tf.trainable_variables() + tf.moving_average_variables()
-    variables_averages_op = variable_averages.apply(variables_to_average)
 
-    # Group all the op needed for training
-    batchnorm_updates_op = tf.group(*batchnorm_updates)
-    apply_gradient_op = optimizer.apply_gradients(grads, global_step=global_step)
-    train_op = tf.group(apply_gradient_op, variables_averages_op,
-                        batchnorm_updates_op)
+def accuracy_calculation(original_seq, decoded_seq, ignore_value=-1, isPrint=True):
+    if len(original_seq) != len(decoded_seq):
+        print('original lengths is different from the decoded_seq,please check again')
+        return 0
+    count = 0
+    for i, origin_label in enumerate(original_seq):
+        decoded_label = [j for j in decoded_seq[i] if j != ignore_value]
+        if isPrint and i < 18:
+            print('seq{0:4d}: origin: {1} decoded:{2}'.format(i, origin_label, decoded_label))
+        if origin_label == decoded_label: count += 1
+    return count * 1.0 / len(original_seq)
 
-    # set tensorflow summary
-    tboard_save_path = 'tboard/crnn_syn90k_multi_gpu'
-    os.makedirs(tboard_save_path, exist_ok=True)
 
-    summary_writer = tf.summary.FileWriter(tboard_save_path)
-
-    avg_train_loss_scalar = tf.summary.scalar(name='average_train_loss',
-                                              tensor=avg_train_loss)
-    avg_val_loss_scalar = tf.summary.scalar(name='average_val_loss',
-                                            tensor=avg_val_loss)
-    learning_rate_scalar = tf.summary.scalar(name='learning_rate_scalar',
-                                             tensor=learning_rate)
-    train_merge_summary_op = tf.summary.merge(
-        [avg_train_loss_scalar, learning_rate_scalar] + train_summary_op_updates
-    )
-    val_merge_summary_op = tf.summary.merge([avg_val_loss_scalar])
-
-    # set tensorflow saver
-    saver = tf.train.Saver()
-    model_save_dir = 'model/crnn_syn90k_multi_gpu'
-    os.makedirs(model_save_dir, exist_ok=True)
-    train_start_time = time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime(time.time()))
-    model_name = 'shadownet_{:s}.ckpt'.format(str(train_start_time))
-    model_save_path = ops.join(model_save_dir, model_name)
-
-    # set sess config
-    sess_config = tf.ConfigProto(device_count={'GPU': CFG.TRAIN.GPU_NUM}, allow_soft_placement=True)
-    sess_config.gpu_options.per_process_gpu_memory_fraction = CFG.TRAIN.GPU_MEMORY_FRACTION
-    sess_config.gpu_options.allow_growth = CFG.TRAIN.TF_ALLOW_GROWTH
-    sess_config.gpu_options.allocator_type = 'BFC'
-
-    # Set the training parameters
-    train_epochs = CFG.TRAIN.EPOCHS
-
-    logger.info('Global configuration is as follows:')
-    logger.info(CFG)
-
-    sess = tf.Session(config=sess_config)
-
-    summary_writer.add_graph(sess.graph)
-
-    with sess.as_default():
-        epoch = 0
-        tf.train.write_graph(graph_or_graph_def=sess.graph, logdir='',
-                             name='{:s}/shadownet_model.pb'.format(model_save_dir))
-
-        if weights_path is None:
-            logger.info('Training from scratch')
-            init = tf.global_variables_initializer()
-            sess.run(init)
-        else:
-            logger.info('Restore model from last model checkpoint {:s}'.format(weights_path))
-            saver.restore(sess=sess, save_path=weights_path)
-            epoch = sess.run(tf.train.get_global_step())
-
-        train_cost_time_mean = []
-        val_cost_time_mean = []
-
-        while epoch < train_epochs:
-            epoch += 1
-            # training part
-            t_start = time.time()
-
-            _, train_loss_value, train_summary, lr = \
-                sess.run(fetches=[train_op,
-                                  avg_train_loss,
-                                  train_merge_summary_op,
-                                  learning_rate])
-
-            if math.isnan(train_loss_value):
-                raise ValueError('Train loss is nan')
-
-            cost_time = time.time() - t_start
-            train_cost_time_mean.append(cost_time)
-
-            summary_writer.add_summary(summary=train_summary,
-                                       global_step=epoch)
-
-            # validation part
-            t_start_val = time.time()
-
-            val_loss_value, val_summary = \
-                sess.run(fetches=[avg_val_loss,
-                                  val_merge_summary_op])
-
-            summary_writer.add_summary(val_summary, global_step=epoch)
-
-            cost_time_val = time.time() - t_start_val
-            val_cost_time_mean.append(cost_time_val)
-
-            if epoch % CFG.TRAIN.DISPLAY_STEP == 0:
-                logger.info('Epoch_Train: {:d} total_loss= {:6f} '
-                            'lr= {:6f} mean_cost_time= {:5f}s '.
-                            format(epoch + 1,
-                                   train_loss_value,
-                                   lr,
-                                   np.mean(train_cost_time_mean)
-                                   ))
-                train_cost_time_mean.clear()
-
-            if epoch % CFG.TRAIN.VAL_DISPLAY_STEP == 0:
-                logger.info('Epoch_Val: {:d} total_loss= {:6f} '
-                            ' mean_cost_time= {:5f}s '.
-                            format(epoch + 1,
-                                   val_loss_value,
-                                   np.mean(val_cost_time_mean)))
-                val_cost_time_mean.clear()
-
-            if epoch % 5000 == 0:
-                saver.save(sess=sess, save_path=model_save_path, global_step=epoch)
-    sess.close()
-
-    return
+if __name__ == '__main__':
+    train_dataset_dir = val_dataset_dir = [os.path.join(PRO_PATH, 'data/test_images/train_data')]
+    charset_path = os.path.join(PRO_PATH, 'data/test_images/doc_charset.txt')
+    train(train_dir=train_dataset_dir, val_dir=val_dataset_dir, charset_path=charset_path)

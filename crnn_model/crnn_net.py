@@ -250,7 +250,6 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         :param labels:
         :return:
         """
-
         inference_ret = self.inference(name=name, reuse=reuse)
 
         loss = tf.reduce_mean(
@@ -264,8 +263,12 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         decoded, log_prob = tf.nn.ctc_beam_search_decoder(inference_ret, self.seq_len, merge_repeated=False)
         self.dense_decoded = tf.sparse_tensor_to_dense(decoded[0], default_value=-1)
         sequence_dist = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32), self.inputs_y))
+        inputs = self.inputs_x
+        targets = self.inputs_y
+        seq_len = self.seq_len
 
-        return inference_ret, loss, decoded, log_prob, sequence_dist
+        return inference_ret, loss, decoded, log_prob, sequence_dist, inputs, targets, seq_len
+
 
 def test():
     input_x = tf.random_normal((10,48,800,1),mean=5,stddev=0,dtype=tf.float32)

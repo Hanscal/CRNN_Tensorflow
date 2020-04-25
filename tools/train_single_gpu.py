@@ -6,8 +6,15 @@ date: 2020/4/21
 Email: caihua@datagrand.com
 '''
 import time
+import copy
 import os
+import sys
 import os.path as ops
+
+PRO_PATH = ops.dirname(ops.dirname(ops.abspath(__file__)))
+sys.path.append(PRO_PATH)
+print(PRO_PATH)
+
 import tensorflow as tf
 import glog as logger
 import numpy as np
@@ -15,15 +22,16 @@ from data_provider.data_reader import SoftpaddingCollate, CrnnData
 from config import global_config
 from crnn_model import crnn_net
 from local_utils.establish_char_dict import CharDictBuilder
-from data_provider import tf_io_pipline_fast_tools
 from local_utils import evaluation_tools
+
 CFG = global_config.cfg
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 
-collate_fn = SoftpaddingCollate(imgH=48,imgW=800,keep_ratio=True,nc=1)
+collate_fn = SoftpaddingCollate(imgH=48, imgW=800, keep_ratio=True, nc=1)
 
-def train_shadownet(train_dataset_dir, val_dataset_dir, charset_path, weights_path=None,  need_decode=False):
+
+def train_shadownet(train_dataset_dir, val_dataset_dir, charset_path, weights_path=None, need_decode=False):
     """
 
     :param dataset_dir:
@@ -45,9 +53,14 @@ def train_shadownet(train_dataset_dir, val_dataset_dir, charset_path, weights_pa
 
     # declare crnn net
     shadownet = crnn_net.ShadowNet(config=CFG, phase='train', charset_path=charset_path)
-    inference_ret, ctc_loss, decoded, log_probm, seq_dist = shadownet.compute_loss(name='ctc_loss')
-    optimizer = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss=ctc_loss, global_step=global_step)
+    inference_ret, ctc_loss, decoded, log_probm, seq_dist, inputs, targets, seq_len = shadownet.compute_loss(
+        name='ctc_loss')
+    optimizer = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss=ctc_loss,
+                                                                                               global_step=global_step)
 
+    # accuracy
+    decoded, log_prob = tf.nn.ctc_beam_search_decoder(inference_ret, seq_len, merge_repeated=False)
+    acc = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32), targets))
     # Set tf summary
     merge_summary_op, sess, summary_writer = summary_save(learning_rate, need_decode, seq_dist, ctc_loss)
 
@@ -60,13 +73,14 @@ def train_shadownet(train_dataset_dir, val_dataset_dir, charset_path, weights_pa
     train_dataset = CrnnData(data_dir_list=train_dataset_dir, collate_fn=collate_fn, shuffle=True)
     val_dataset = CrnnData(data_dir_list=val_dataset_dir, collate_fn=collate_fn, shuffle=True)
     char_build = CharDictBuilder(charset_path=charset_path)
+
     def encode_to_int(labels):
         label_encode, label_length = [], []
         for label in labels:
             label_t, label_tl = char_build.encode_label(label)
             label_encode.append(label_t)
             label_length.append(label_tl)
-        char_build.sparse_label(label_encode)
+        label_encode = char_build.sparse_label(label_encode)
         return label_encode, label_length
 
     def do_report():
@@ -74,47 +88,44 @@ def train_shadownet(train_dataset_dir, val_dataset_dir, charset_path, weights_pa
         val_labels, val_labels_length = encode_to_int(val_labels)
         feed_dict_val = {shadownet.inputs_x: val_images, shadownet.inputs_y: val_labels,
                          shadownet.seq_len: CFG.ARCH.SEQ_LENGTH * np.ones(CFG.TEST.BATCH_SIZE)}
-        val_ctc_loss_value, val_seq_dist_value, \
-        val_predictions, val_labels_sparse = sess.run(
-            [ctc_loss, seq_dist, decoded, val_labels], feed_dict=feed_dict_val)
+        val_ctc_loss_value, val_seq_dist_value, avg_val_accuracy = sess.run(
+            [ctc_loss, seq_dist, acc], feed_dict=feed_dict_val)
 
-        val_labels_str = char_build.decode_label(val_labels_sparse)
-        val_predictions = char_build.decode_label(val_predictions[0])
-        avg_val_accuracy = evaluation_tools.compute_accuracy(val_labels_str, val_predictions)
-
-        return val_ctc_loss_value, avg_val_accuracy
-
+        return val_ctc_loss_value, val_seq_dist_value, avg_val_accuracy
 
     def train_batch(epoch, decode_flag=False):
+        # prepare batch dataset
+        train_images, train_labels, train_images_paths = train_dataset.next_batch(batch_size=CFG.TRAIN.BATCH_SIZE)
+        # encode label to int
+        train_labels, train_labels_length = encode_to_int(train_labels)
+        feed_dict_train = {shadownet.inputs_x: train_images, shadownet.inputs_y: train_labels,
+                           shadownet.seq_len: CFG.ARCH.SEQ_LENGTH * np.ones(CFG.TRAIN.BATCH_SIZE)}
+
         if decode_flag:
-            # prepare batch dataset
-            train_images, train_labels, train_images_paths = train_dataset.next_batch(batch_size=CFG.TRAIN.BATCH_SIZE)
-            # encode label to int
-            train_labels, train_labels_length = encode_to_int(train_labels)
-            feed_dict_train = {shadownet.inputs_x: train_images, shadownet.inputs_y: train_labels, shadownet.seq_len:CFG.ARCH.SEQ_LENGTH * np.ones(CFG.TRAIN.BATCH_SIZE)}
-
-            _, train_ctc_loss_value, train_seq_dist_value, \
-            train_predictions, train_labels_sparse, merge_summary_value = sess.run(
-                [optimizer, ctc_loss, seq_dist, decoded, train_labels, merge_summary_op], feed_dict=feed_dict_train)
-
-            train_labels_str = char_build.decode_label(train_labels_sparse)
-            train_predictions = char_build.decode_label(train_predictions[0])
-            avg_train_accuracy = evaluation_tools.compute_accuracy(train_labels_str, train_predictions)
-            logger.info('Epoch_Train: {:d} cost= {:9f} seq distance= {:9f} train accuracy= {:9f}'.format(
-                epoch + 1, train_ctc_loss_value, train_seq_dist_value, avg_train_accuracy))
-
+            _, train_ctc_loss_value, train_seq_dist_value, merge_summary_value, avg_train_accuracy = sess.run(
+                [optimizer, ctc_loss, seq_dist, merge_summary_op, acc], feed_dict=feed_dict_train)
+            print('Epoch_Train:', epoch, end=' ')
+            print('Cost:', train_ctc_loss_value, end=' ')
+            print('Seq_Distance:', train_seq_dist_value, end=' ')
+            print('Train_Accuarcy:', avg_train_accuracy)
+            # logger.info('Epoch_Train: {:d} cost= {:9f} seq distance= {:9f} train accuracy= {:9f}'.format(
+            #     epoch + 1, train_ctc_loss_value, train_seq_dist_value, avg_train_accuracy[0]))
             if epoch % CFG.TRAIN.VAL_DISPLAY_STEP == 0:
                 # validation part
                 val_ctc_loss_value, val_seq_dist_value, avg_val_accuracy = do_report()
-                logger.info('Epoch_Val: {:d} cost= {:9f} seq distance= {:9f} train accuracy= {:9f}'.format(
-                    epoch + 1, val_ctc_loss_value, val_seq_dist_value, avg_val_accuracy))
+                print('Epoch_Val:', epoch, end=' ')
+                print('Cost_Val:', val_ctc_loss_value, end=' ')
+                print('Seq_Distance:', val_seq_dist_value, end=' ')
+                print('Val_Accuarcy:', avg_val_accuracy)
+            # logger.info('Epoch_Val: {:d} cost= {:9f} seq distance= {:9f} train accuracy= {:9f}'.format(
+            #     epoch + 1, val_ctc_loss_value, val_seq_dist_value, avg_val_accuracy))
         else:
-            _, train_ctc_loss_value, merge_summary_value = sess.run([optimizer, ctc_loss, merge_summary_op], feed_dict=feed_dict_train)
+            _, train_ctc_loss_value, merge_summary_value = sess.run([optimizer, ctc_loss, merge_summary_op],
+                                                                    feed_dict=feed_dict_train)
 
             if epoch % CFG.TRAIN.DISPLAY_STEP == 0:
                 logger.info('Epoch_Train: {:d} cost= {:9f}'.format(epoch + 1, train_ctc_loss_value))
         return train_ctc_loss_value, merge_summary_value
-
 
     with sess.as_default():
         epoch = 0
@@ -134,9 +145,9 @@ def train_shadownet(train_dataset_dir, val_dataset_dir, charset_path, weights_pa
         while epoch < train_epochs:
             epoch += 1
             # setup early stopping
-            patience_counter, break_flag = early_stop(epoch,cost_history,patience_counter)
+            patience_counter, break_flag = early_stop(epoch, cost_history, patience_counter)
             if break_flag: break
-            train_ctc_loss_value, merge_summary_value = train_batch(epoch=epoch,decode_flag=True)
+            train_ctc_loss_value, merge_summary_value = train_batch(epoch=epoch, decode_flag=True)
 
             # record history train ctc loss
             cost_history.append(train_ctc_loss_value)
@@ -144,20 +155,20 @@ def train_shadownet(train_dataset_dir, val_dataset_dir, charset_path, weights_pa
             summary_writer.add_summary(summary=merge_summary_value, global_step=epoch)
             if epoch % 1000 == 0 and min_cost > train_ctc_loss_value:
                 min_cost = train_ctc_loss_value
-                model_save_path = model_save(epoch,min_cost)
+                model_save_path = model_save(epoch, min_cost)
                 saver.save(sess=sess, save_path=model_save_path, global_step=epoch)
 
     return np.array(cost_history[1:])  # Don't return the first np.inf
 
 
-def summary_save(learning_rate, need_decode, seq_dist, ctc_loss, is_train=True, tboard_save_dir = 'tboard/crnn_syn90k'):
+def summary_save(learning_rate, need_decode, seq_dist, ctc_loss, is_train=True, tboard_save_dir='tboard/crnn_syn90k'):
     os.makedirs(tboard_save_dir, exist_ok=True)
     name_loss = 'train_ctc_loss' if is_train else 'val_ctc_loss'
-    tf.summary.scalar(name= name_loss, tensor=ctc_loss)
+    tf.summary.scalar(name=name_loss, tensor=ctc_loss)
     tf.summary.scalar(name='learning_rate', tensor=learning_rate)
     if need_decode:
         name_dist = 'train_seq_distance' if is_train else 'val_seq_distance'
-        tf.summary.scalar(name= name_dist, tensor=seq_dist)
+        tf.summary.scalar(name=name_dist, tensor=seq_dist)
     merge_summary_op = tf.summary.merge_all()
 
     # Set sess configuration
@@ -175,9 +186,10 @@ def model_save(epoch, cost, model_save_dir='model/crnn_syn90k'):
     # Set saver configuration
     os.makedirs(model_save_dir, exist_ok=True)
     train_start_time = time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime(time.time()))
-    model_name = 'shadownet_{}_{}_{:s}.ckpt'.format(epoch,cost,str(train_start_time))
+    model_name = 'shadownet_{}_{}_{:s}.ckpt'.format(epoch, cost, str(train_start_time))
     model_save_path = ops.join(model_save_dir, model_name)
     return model_save_path
+
 
 def early_stop(epoch, cost_history, patience_counter):
     break_flag = False
@@ -187,12 +199,13 @@ def early_stop(epoch, cost_history, patience_counter):
     else:
         patience_counter += 1
     if patience_counter > CFG.TRAIN.PATIENCE_EPOCHS:
-        logger.info("Cost didn't improve beyond {:f} for {:d} epochs, stopping early.".format(CFG.TRAIN.PATIENCE_DELTA, patience_counter))
+        logger.info("Cost didn't improve beyond {:f} for {:d} epochs, stopping early.".format(CFG.TRAIN.PATIENCE_DELTA,
+                                                                                              patience_counter))
         break_flag = True
     return patience_counter, break_flag
 
 
 if __name__ == '__main__':
-    train_dataset_dir = val_dataset_dir = ['data/test_images/train_data']
-    charset_path = 'data/test_images/doc_charset.txt'
+    train_dataset_dir = val_dataset_dir = [os.path.join(PRO_PATH, 'data/test_images/train_data')]
+    charset_path = os.path.join(PRO_PATH, 'data/test_images/doc_charset.txt')
     train_shadownet(train_dataset_dir, val_dataset_dir, charset_path, weights_path=None, need_decode=True)
