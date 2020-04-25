@@ -7,25 +7,18 @@ Email: caihua@datagrand.com
 '''
 
 import tensorflow as tf
-import numpy as np
-import random
-import time
-import logging, datetime
-from tensorflow.python.client import device_lib
-from tensorflow.python.client import timeline
+from config import global_config
+
+CFG = global_config.cfg
 import utils
 import os, sys
 
 slim = tf.contrib.slim
 from TPS import ThinPlateSpline2 as stn
 
-FLAGS = utils.FLAGS
+FLAGS = global_config.cfg
 from crnn_model.densenet import *
-
-# 26*2 + 10 digit + blank + space
-num_classes = utils.num_classes
-max_timesteps = 0
-num_features = utils.num_features
+from local_utils.establish_char_dict import CharDictBuilder
 
 
 def stacked_bidirectional_rnn(RNN, num_units, num_layers, inputs, seq_lengths):
@@ -56,10 +49,16 @@ def stacked_bidirectional_rnn(RNN, num_units, num_layers, inputs, seq_lengths):
 
 
 class Graph(object):
-    def __init__(self, is_training=True):
+    def __init__(self, charset_path,is_training=True,cfg=FLAGS):
+        self.config = cfg
+        self.imgW, self.imgH = self.config.INPUT_SIZE
+        self.nc = self.config.INPUT_CHANNELS
+        self.chardict = CharDictBuilder()
+        self.char2id, self.id2char = self.chardict.read_charset(charset_path)
+        self._num_classes = len(self.char2id)
         self.graph = tf.Graph()
         with self.graph.as_default():
-            self.inputs = tf.placeholder(tf.float32, [None, utils.image_width, utils.image_height, 1])
+            self.inputs = tf.placeholder(tf.float32, [None, self.imgW, self.imgH, self.nc])
             '''with tf.variable_scope('STN'):
                 #Localisation net
                 conv1_loc = slim.conv2d(self.inputs, 32, [3, 3], scope='conv1_loc')
@@ -109,12 +108,12 @@ class Graph(object):
             batch_s, max_timesteps = shape[0], shape[1]
             # Reshaping to apply the same weights over the timesteps
             outputs = tf.reshape(outputs, [-1, FLAGS.num_hidden * 2])
-            W = tf.Variable(tf.truncated_normal([FLAGS.num_hidden * 2, num_classes], stddev=0.1, dtype=tf.float32),
+            W = tf.Variable(tf.truncated_normal([FLAGS.num_hidden * 2, self._num_classes], stddev=0.1, dtype=tf.float32),
                             name='W')
-            b = tf.Variable(tf.constant(0., dtype=tf.float32, shape=[num_classes], name='b'))
+            b = tf.Variable(tf.constant(0., dtype=tf.float32, shape=[self._num_classes], name='b'))
             logits = tf.matmul(outputs, W) + b
             # Reshaping back to the original shape
-            logits = tf.reshape(logits, [batch_s, -1, num_classes])
+            logits = tf.reshape(logits, [batch_s, -1, self._num_classes])
             # Time major
             logits = tf.transpose(logits, (1, 0, 2))
             self.global_step = tf.Variable(0, trainable=False)

@@ -5,7 +5,7 @@ author: "caihua"
 date: 2020/4/21
 Email: caihua@datagrand.com
 '''
-import model
+import crnn_model.crnn_net_multi as model
 import time
 import tensorflow as tf
 import numpy as np
@@ -27,10 +27,11 @@ logger = logging.getLogger('Traing for ocr using DenseCNN+BiLSTM+CTC')
 logger.setLevel(logging.INFO)
 
 collate_fn = SoftpaddingCollate(imgH=48, imgW=800, keep_ratio=True, nc=1)
+os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 
 
 def train(train_dir, val_dir, charset_path):
-    g = model.Graph(is_training=True)
+    g = model.Graph(charset_path=charset_path,is_training=True)
     print('loading train data, please wait---------------------', 'end= ')
     train_feeder = CrnnData(data_dir_list=train_dir, collate_fn=collate_fn, shuffle=True)
     val_feeder = CrnnData(data_dir_list=val_dir, collate_fn=collate_fn, shuffle=False)
