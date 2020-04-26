@@ -101,7 +101,7 @@ class CrnnData(object):
 
     @property
     def size(self):
-        return len(self.data_size)
+        return self.data_size
 
     def the_label(self, indexs):
         labels = []

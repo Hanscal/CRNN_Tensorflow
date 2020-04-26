@@ -16,6 +16,12 @@ from tensorflow.contrib import rnn
 from crnn_model import cnn_basenet
 from local_utils.establish_char_dict import CharDictBuilder
 from config import global_config
+import os.path as ops
+import sys
+
+PRO_PATH = ops.dirname(ops.dirname(ops.abspath(__file__)))
+sys.path.append(PRO_PATH)
+print(PRO_PATH)
 
 CFG = global_config.cfg
 
@@ -24,6 +30,7 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
     """
         Implement the crnn model for squence recognition
     """
+
     def __init__(self, config, phase, charset_path):
         """
 
@@ -42,15 +49,14 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         self.char2id, self.id2char = self.chardict.read_charset(charset_path)
         self._num_classes = len(self.char2id)
 
-
         self.inputs_x = tf.placeholder(tf.float32, [None, self.imgH, self.imgW, self.nc], name='input_x')
         self.inputs_y = tf.sparse_placeholder(tf.int32, name='input_y')
         self.seq_len = tf.placeholder(tf.int32, [None])
 
         self._is_training = self._init_phase(phase)
 
-    def _init_phase(self,phase):
-        return tf.equal(phase.lower(),'train')
+    def _init_phase(self, phase):
+        return tf.equal(phase.lower(), 'train')
 
     def _conv_stage(self, inputdata, out_dims, name):
         """ Standard VGG convolutional stage: 2d conv, relu, and maxpool
@@ -60,7 +66,6 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         :return: the maxpooled output of the stage
         """
         with tf.variable_scope(name_or_scope=name):
-
             conv = self.conv2d(
                 inputdata=inputdata, out_channel=out_dims,
                 kernel_size=3, stride=1, use_bias=True, name='conv'
@@ -133,7 +138,8 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
                 inputdata=relu6, kernel_size=[2, 1], stride=[2, 1], name='max_pool6'
             )
             conv7 = self.conv2d(
-                inputdata=max_pool6, out_channel=512, kernel_size=2, stride=[imgH//16, 1], use_bias=False, name='conv7'
+                inputdata=max_pool6, out_channel=512, kernel_size=2, stride=[imgH // 16, 1], use_bias=False,
+                name='conv7'
             )
             bn7 = self.layerbn(
                 inputdata=conv7, is_training=self._is_training, name='bn7'
@@ -154,7 +160,6 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
         :return:
         """
         with tf.variable_scope(name_or_scope=name):
-
             shape = inputdata.get_shape().as_list()
             assert shape[1] == 1  # H of the feature map must equal to 1
 
@@ -193,7 +198,7 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
 
             shape = tf.shape(stack_lstm_layer)
             # batch_s, max_timesteps = shape[0], shape[1]
-            rnn_reshaped = tf.reshape(stack_lstm_layer, [shape[0]*shape[1], shape[2]])
+            rnn_reshaped = tf.reshape(stack_lstm_layer, [shape[0] * shape[1], shape[2]])
 
             w = tf.get_variable(
                 name='w',
@@ -271,13 +276,12 @@ class ShadowNet(cnn_basenet.CNNBaseModel):
 
 
 def test():
-    input_x = tf.random_normal((10,48,800,1),mean=5,stddev=0,dtype=tf.float32)
-    input_y = tf.sparse()
-    charset_path = '/Volumes/work/practice/CRNN_Tensorflow/data/test_images/doc_charset.txt'
-    model = ShadowNet(CFG,phase='train',charset_path=charset_path)
+    charset_path = ops.join(PRO_PATH,'data/test_images/doc_charset.txt')
+    model = ShadowNet(CFG, phase='train', charset_path=charset_path)
     net_out = model.inference('inference')
-    loss_op = model.compute_loss()
-    print(net_out)
+    loss_op = model.compute_loss('ctc_loss')
+    print(net_out, loss_op)
 
-if __name__ =='__main__':
+
+if __name__ == '__main__':
     test()

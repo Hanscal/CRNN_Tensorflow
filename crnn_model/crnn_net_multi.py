@@ -10,15 +10,17 @@ import tensorflow as tf
 from config import global_config
 
 CFG = global_config.cfg
-import utils
-import os, sys
-
 slim = tf.contrib.slim
-from TPS import ThinPlateSpline2 as stn
 
 FLAGS = global_config.cfg
 from crnn_model.densenet import *
 from local_utils.establish_char_dict import CharDictBuilder
+
+import os.path as ops
+import sys
+PRO_PATH = ops.dirname(ops.dirname(ops.abspath(__file__)))
+sys.path.append(PRO_PATH)
+print(PRO_PATH)
 
 
 def stacked_bidirectional_rnn(RNN, num_units, num_layers, inputs, seq_lengths):
@@ -49,16 +51,18 @@ def stacked_bidirectional_rnn(RNN, num_units, num_layers, inputs, seq_lengths):
 
 
 class Graph(object):
-    def __init__(self, charset_path,is_training=True,cfg=FLAGS):
-        self.config = cfg
+    def __init__(self, charset_path, is_training=True, cfg=FLAGS):
+        self.config = cfg.ARCH
         self.imgW, self.imgH = self.config.INPUT_SIZE
         self.nc = self.config.INPUT_CHANNELS
+        self.num_hidden = self.config.HIDDEN_UNITS
         self.chardict = CharDictBuilder()
         self.char2id, self.id2char = self.chardict.read_charset(charset_path)
         self._num_classes = len(self.char2id)
         self.graph = tf.Graph()
         with self.graph.as_default():
-            self.inputs = tf.placeholder(tf.float32, [None, self.imgW, self.imgH, self.nc])
+            self.inputs = tf.placeholder(tf.float32, [None, self.imgH, self.imgW, self.nc])
+            # batch*32*100*3 NHWC format
             '''with tf.variable_scope('STN'):
                 #Localisation net
                 conv1_loc = slim.conv2d(self.inputs, 32, [3, 3], scope='conv1_loc')
@@ -82,34 +86,36 @@ class Graph(object):
                 s = tf.constant(s.reshape([256, 10, 2]), dtype=tf.float32)
                 self.h_trans = stn(self.inputs, s, loc, (utils.image_width, utils.image_height))'''
             with tf.variable_scope('Dense_CNN'):
-                    nb_filter = 64
-                    net = tf.layers.conv2d(self.inputs, nb_filter, 5, (2, 2), "SAME", use_bias=False)
-                    net, nb_filter = dense_block(net, 8, 8, nb_filter, is_training)
-                    net, nb_filter = transition_block(net, 128, is_training, pooltype=2)
-                    net, nb_filter = dense_block(net, 8, 8, nb_filter, is_training)
-                    net, nb_filter = transition_block(net, 128, is_training, pooltype=3)
-                    net, nb_filter = dense_block(net, 8, 8, nb_filter, is_training)
-                    # net, nb_filter = transition_block(net, 128, is_training, pooltype=3)
-                    print(net)
-                    # net = tf.layers.conv2d(net, nb_filter, 3, (1, 2), "SAME", use_bias=True)
-                    self.cnn_time = net.get_shape().as_list()[1]
-                    self.num_feauture = 4 * 192
+                nb_filter = 64
+                net = tf.layers.conv2d(self.inputs, nb_filter, 5, (2, 2), "SAME", use_bias=False)
+                net, nb_filter = dense_block(net, 8, 8, nb_filter, is_training)
+                net, nb_filter = transition_block(net, 128, is_training, pooltype=2)  # stride [2,2]
+                net, nb_filter = dense_block(net, 8, 8, nb_filter, is_training)
+                net, nb_filter = transition_block(net, 256, is_training, pooltype=1)
+                net, nb_filter = dense_block(net, 8, 8, nb_filter, is_training)
+                net, nb_filter = transition_block(net, 512, is_training, pooltype=1) # stride [2,1]
+
+                net = tf.layers.conv2d(net, nb_filter, 3, (self.imgH//16, 2), "SAME", use_bias=False)
+                print(net)
+                self.cnn_time = net.get_shape().as_list()[2]
+                self.num_feauture = net.get_shape().as_list()[3]
 
             temp_inputs = net
             with tf.variable_scope('BiLSTM'):
                 self.labels = tf.sparse_placeholder(tf.int32)
                 self.seq_len = tf.placeholder(tf.int32, [None])
                 self.lstm_inputs = tf.reshape(temp_inputs, [-1, self.cnn_time, self.num_feauture])
-                outputs = stacked_bidirectional_rnn(tf.contrib.rnn.LSTMCell, FLAGS.num_hidden, 2, self.lstm_inputs,
+                outputs = stacked_bidirectional_rnn(tf.contrib.rnn.LSTMCell, self.num_hidden, 2, self.lstm_inputs,
                                                     self.seq_len)
             # The second output is the last state and we will no use that
             # outputs, _ = tf.nn.dynamic_rnn(stack, self.lstm_inputs, self.seq_len, dtype=tf.float32)
             shape = tf.shape(self.lstm_inputs)
             batch_s, max_timesteps = shape[0], shape[1]
             # Reshaping to apply the same weights over the timesteps
-            outputs = tf.reshape(outputs, [-1, FLAGS.num_hidden * 2])
-            W = tf.Variable(tf.truncated_normal([FLAGS.num_hidden * 2, self._num_classes], stddev=0.1, dtype=tf.float32),
-                            name='W')
+            outputs = tf.reshape(outputs, [-1, self.num_hidden * 2])
+            W = tf.Variable(
+                tf.truncated_normal([self.num_hidden * 2, self._num_classes], stddev=0.1, dtype=tf.float32),
+                name='W')
             b = tf.Variable(tf.constant(0., dtype=tf.float32, shape=[self._num_classes], name='b'))
             logits = tf.matmul(outputs, W) + b
             # Reshaping back to the original shape
@@ -119,12 +125,11 @@ class Graph(object):
             self.global_step = tf.Variable(0, trainable=False)
             self.loss = tf.nn.ctc_loss(labels=self.labels, inputs=logits, sequence_length=self.seq_len)
             self.cost = tf.reduce_mean(self.loss)
-            self.learning_rate = tf.train.exponential_decay(FLAGS.initial_learning_rate, self.global_step,
-                                                            FLAGS.decay_steps,
-                                                            FLAGS.decay_rate, staircase=True)
-            self.optimizer = tf.train.MomentumOptimizer(learning_rate=self.learning_rate, momentum=FLAGS.momentum,
-                                                        use_nesterov=True).minimize(self.cost,
-                                                                                    global_step=self.global_step)
+            self.learning_rate = tf.train.exponential_decay(cfg.TRAIN.LEARNING_RATE, self.global_step,
+                                                            cfg.TRAIN.LR_DECAY_STEPS,
+                                                            cfg.TRAIN.LR_DECAY_RATE, staircase=True)
+            self.optimizer = tf.train.MomentumOptimizer(learning_rate=self.learning_rate, momentum=cfg.TRAIN.MOMENTUM,
+                                                        use_nesterov=True).minimize(self.cost,global_step=self.global_step)
 
             # Option 2: tf.contrib.ctc.ctc_beam_search_decoder
             # (it's slower but you'll get better results)
@@ -137,3 +142,8 @@ class Graph(object):
             tf.summary.scalar('cost', self.cost)
             # tf.summary.scalar('lerr',self.lerr)
             self.merged_summay = tf.summary.merge_all()
+
+
+if __name__=='__main__':
+    charset_path = ops.join(PRO_PATH, 'data/test_images/doc_charset.txt')
+    g = Graph(charset_path=charset_path)
